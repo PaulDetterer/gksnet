@@ -142,6 +142,8 @@ plot(p1,p2, layout=(2,1))
 using Flux
 using CUDA
 CUDA.allowscalar(false)
+# Pick device
+CUDA.device!(1)
 
 # Function to get spectrogram label pairs
 # Deviation from TF - I store labels in onehot format
@@ -164,7 +166,9 @@ p2 = plot_spectrogram(x, "Spectogram")
 @show commands
 plot(p1, p2, layout=(2,1)) 
 ##
-
+CUDA.devices()
+CUDA.device!(1)
+##
 spectrogram_ds = get_spectrogram.(train_wf_x)
 spectrogram_id = get_label_id.(train_wf_y)
 
@@ -246,10 +250,20 @@ figs = [
 
 plot(figs...,layout=(rows,cols))
 
+## Dump Data
+using BSON: @save
+
+@save "train_ds_x.bson" train_ds_x
+@save "train_ds_y.bson" train_ds_y
+@save "val_ds_x.bson" val_ds_x
+@save "val_ds_y.bson" val_ds_y
+@save "test_ds_x.bson" test_ds_x
+@save "test_ds_y.bson" test_ds_y
+
 ## Finally use the DataLoader
 
 trainingData = Flux.DataLoader((gpu(train_ds_x), gpu(train_ds_y)), batchsize=64,shuffle=true)
-valData = Flux.DataLoader((gpu(val_ds_x), gpu(val_ds_y)), batchsize=64)
+valData = Flux.DataLoader((gpu(val_ds_x), gpu(val_ds_y)), batchsize=64);
 
 ## Compute mean 
 using Statistics
@@ -339,6 +353,8 @@ fig2 = plot(
 )
 plot(fig1, fig2, layout=(2,1))
 ##
+model = cpu(model)
+##
 ŷ = Flux.onecold(model(test_ds_x))
 y = Flux.onecold(test_ds_y)
 test_acc = sum(y .== ŷ) ./ length(y)
@@ -361,8 +377,12 @@ heatmap(
 )
 ##
 GC.gc(true)
+trainingData = nothing
+valData = nothing
 CUDA.reclaim()
 using BSON:@save
-@save "../models/tf-inspired-model-ACC0p95.bson" model
+@save "../models/tf-inspired-model-ACC0p96.bson" model
+##
+CUDA.memory_status()
 ##
 

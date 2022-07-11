@@ -1,7 +1,28 @@
-## The Evaliable Commands
+#The Evaliable Commands
 # 
-dataset_path = "/mnt/space/datasets/mixed_speech_commands"
-commands = [c for c=readdir(dataset_path) if c!="README.md"]
+# dataset_path = "/mnt/space/datasets/mixed_speech_commands"
+dataset_path = "/mnt/space/datasets/googlespeech_v002"
+all_commands = [c for c=readdir(dataset_path) if isdir(dataset_path*"/"*c)]
+for (n,c)=enumerate(commands)
+    if (n%4==0)
+        println(" $c")
+    elseif (n%4==1)
+        print("$c")
+    else
+        print(" $c")
+    end
+end
+
+##
+commands = [
+ #   "_background_noise_",
+    "down",
+    "left",
+    "right",
+    "stop"
+]
+# Check if all commands are available
+@assert all([c in all_commands for c=commands]) 
 
 ##
 
@@ -12,27 +33,49 @@ commands = [c for c=readdir(dataset_path) if c!="README.md"]
 using Glob
 using Random
 
-filenames = glob("$(relpath(dataset_path))/*/*") |> shuffle
+filenames = vcat(
+    [
+        glob("$(relpath(dataset_path))/$c/*.wav")
+        for c=commands
+    ]...) |> shuffle
 num_examples = length(readdir("$(relpath(dataset_path))/$(commands[1])"))
 println("Number of total examples: ",length(filenames))
 println("Number of examples per label: ", num_examples)
 println("Example File Tensor: ", filenames[1])
+#
 
 # Separate the data set in training data, validation data and test data
-train_num = div(length(filenames) * 80, 100)
-val_num = div(length(filenames) - train_num, 2)
-test_num = length(filenames) - train_num - val_num
-@show (train_num, val_num, test_num)
-train_files = filenames[1:train_num]
-val_files = filenames[(train_num+1):(train_num+val_num)]
-test_files = filenames[(train_num+val_num+1):end]
+#
+#train_num = div(length(filenames) * 80, 100)
+#val_num = div(length(filenames) - train_num, 2)
+#test_num = length(filenames) - train_num - val_num
+#@show (train_num, val_num, test_num)
+#train_files = filenames[1:train_num]
+#val_files = filenames[(train_num+1):(train_num+val_num)]
+#test_files = filenames[(train_num+val_num+1):end]
+#
+
+# Separate data according to googles method
+val_files = [
+    "$(relpath(dataset_path))/$f"
+    for f=open(f->split(strip(read(f,String)),"\n"),"$(dataset_path)/validation_list.txt")
+        if split(f,"/")[1] in commands
+]
+test_files = [
+    "$(relpath(dataset_path))/$f"
+    for f=open(f->split(strip(read(f,String)),"\n"),"$(dataset_path)/testing_list.txt")
+        if split(f,"/")[1] in commands
+]
+train_files = [f for f=filenames if (!(f in val_files) && !(f in test_files))] |> shuffle
 
 println("Training set size: ", length(train_files))
 println("Validation set size: ", length(val_files))
 println("Test set size: ", length(test_files))
 @show length(filenames)
-
 ##
+
+
+
 # Check loading WAVs
 using WAV
 test_audio, fs = wavread("$(dataset_path)/down/0a9f9af7_nohash_0.wav")
@@ -44,6 +87,7 @@ test_audio, fs = wavread("$(dataset_path)/down/0a9f9af7_nohash_0.wav")
 
 # Function to load WAVs
 function decode_audio(audio_binary)
+    # println("Reading $(audio_binary)")
     audio, fs = wavread(audio_binary)
     convert.(Float32,audio[:,1])
 end
@@ -260,6 +304,16 @@ using BSON: @save
 @save "test_ds_x.bson" test_ds_x
 @save "test_ds_y.bson" test_ds_y
 
+## Load Data
+using BSON: @load
+
+@load "train_ds_x.bson" train_ds_x
+@load "train_ds_y.bson" train_ds_y
+@load "val_ds_x.bson" val_ds_x
+@load "val_ds_y.bson" val_ds_y
+@load "test_ds_x.bson" test_ds_x
+@load "test_ds_y.bson" test_ds_y
+
 ## Finally use the DataLoader
 
 trainingData = Flux.DataLoader((gpu(train_ds_x), gpu(train_ds_y)), batchsize=64,shuffle=true)
@@ -273,10 +327,12 @@ ds_sqrt_var = sqrt(var(train_ds_x))
 ## Model Definition
 
 model = Chain(
-    Upsample(:bilinear,size=(32,32)),
-    x->(x .- ds_mean) ./ ds_sqrt_var,
-    Conv((3,3),1=>32, Flux.relu),
+    Upsample(:bilinear,size=(64,64)),
+#    x->(x .- ds_mean) ./ ds_sqrt_var,
+    Conv((3,3),1=>32, Flux.relu,dilation=2, stride=2),
+    BatchNorm(32),
     Conv((3,3),32=>64, Flux.relu),
+    BatchNorm(64),
     MaxPool((2,2)),
     Dropout(0.25),
     Flux.flatten,
@@ -317,12 +373,15 @@ end
 @show getAccuracy(model,gpu(valData))
 ## Train
 opt = Flux.Optimise.ADAM()
+# opt = Flux.Optimise.ADAM(1e-5)
 ps = Flux.params(model)
-loss_record = []
-acc_record = []
+val_loss_record = []
+val_acc_record = []
+train_loss_record = []
+train_acc_record = []
 #evalcb() = println("Loss: $(loss_tot(valData))")
 for epoch=1:10
-    testmode!(model,false)
+    trainmode!(model,true)
     Flux.train!(
         loss,
         ps,
@@ -331,30 +390,38 @@ for epoch=1:10
      #   cb=Flux.throttle(evalcb,10),
     )
     testmode!(model,true)
-    l = loss_tot(valData)
-    acc = getAccuracy(model,valData)
-    println("E$(epoch): L: $l , Acc: $acc")
-    push!(loss_record,l)
-    push!(acc_record,acc)
+    lt = loss_tot(trainingData)
+    acct = getAccuracy(model,trainingData)
+    lv = loss_tot(valData)
+    accv = getAccuracy(model,valData)
+    println("E$(epoch): L: ($lt, $lv) , Acc: ($acct, $accv)")
+    push!(val_loss_record,lv)
+    push!(val_acc_record,accv)
+    push!(train_loss_record,lt)
+    push!(train_acc_record,acct)
 end
 
 ## Plot Loss and Accuracy
+using Plots
 fig1 = plot(
-    loss_record,
+    [train_loss_record val_loss_record],
     title = "Val Loss",
-    legend=false,
+    labels = ["Train" "Val"],
+    #legend=false,
     # xlabel="Epochs",
 )
 fig2 = plot(
-    round.(acc_record.*100),
+    round.([train_acc_record val_acc_record].*100),
     title = "Val Accuracy",
+    labels = ["Train" "Val"],
     xlabel="Epochs",
-    legend=false,
+    #legend=false,
 )
 plot(fig1, fig2, layout=(2,1))
 ##
 model = cpu(model)
 ##
+testmode!(model,true)
 ŷ = Flux.onecold(model(test_ds_x))
 y = Flux.onecold(test_ds_y)
 test_acc = sum(y .== ŷ) ./ length(y)
@@ -380,8 +447,9 @@ GC.gc(true)
 trainingData = nothing
 valData = nothing
 CUDA.reclaim()
+##
 using BSON:@save
-@save "../models/tf-inspired-model-ACC0p96.bson" model
+@save "../models/tf-inspired-model-KWS4-ACC0p95.bson" model
 ##
 CUDA.memory_status()
 ##

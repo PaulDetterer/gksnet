@@ -82,7 +82,7 @@ test_audio, fs = wavread("$(dataset_path)/down/0a9f9af7_nohash_0.wav")
 @show fs
 @show size(test_audio)
 #inline_audioplayer(test_audio,fs)
-##wavplay(test_audio,fs)
+#wavplay(test_audio,fs)
 ##
 
 # Function to load WAVs
@@ -257,13 +257,18 @@ function preprocess_dataset_from_tf(path, num)
     wf_x, wf_y = load_tf_waveform_dump(path, num)
     x = my_spectrogram.(wf_x)
     y = get_label_id.(wf_y)
-    if (length(x)<=3200)
-        x = cat(x...,dims=4)
+    xt = x
+    if (length(xt)<=3200)
+        xt = cat(x...,dims=3)
     else
-        x1 = cat(x[1:3200]...,dims=4)
-        x2 = cat(x[3201:end]...,dims=4)
-        x = [x1;;;;x2;;;;]
+        xt = cat(x[1:3200]...,dims=3)
+        for i=2:div(length(x),3200)
+            xt = [xt;;;cat(x[(3200i-3199):(3200i)]...,dims=3)]
+        end
+        xt = [xt;;;cat(x[end-(length(x)%3200)+1:end]...,dims=3)]
     end
+    y = get_label_id.(labels)
+    xt, cat(y...,dims=2)
     x , cat(y...,dims=2)
 end
 
@@ -327,12 +332,12 @@ ds_sqrt_var = sqrt(var(train_ds_x))
 ## Model Definition
 
 model = Chain(
-    Upsample(:bilinear,size=(64,64)),
+    Upsample(:bilinear,size=(32,32)),
 #    x->(x .- ds_mean) ./ ds_sqrt_var,
-    Conv((3,3),1=>32, Flux.relu,dilation=2, stride=2),
-    BatchNorm(32),
+    Conv((3,3),1=>32, Flux.relu),#,dilation=2, stride=2),
+    BatchNorm(32,affine=true, track_stats=true),
     Conv((3,3),32=>64, Flux.relu),
-    BatchNorm(64),
+    BatchNorm(64,affine=true,track_stats=true),
     MaxPool((2,2)),
     Dropout(0.25),
     Flux.flatten,
@@ -449,8 +454,27 @@ valData = nothing
 CUDA.reclaim()
 ##
 using BSON:@save
-@save "../models/tf-inspired-model-KWS4-ACC0p95.bson" model
+@save "../models/tf-inspired-model-KWS4-ACC0p96.bson" model
 ##
 CUDA.memory_status()
+## Dump weights for python
+using NPZ
+npzwrite("../npy/weights_C1.npy",model[2].weight)
+npzwrite("../npy/biases_C1.npy",model[2].bias)
+npzwrite("../npy/mu_BN2.npy",model[3].μ)
+npzwrite("../npy/sig_BN2.npy",model[3].σ²)
+npzwrite("../npy/gamma_BN2.npy",model[3].γ)
+npzwrite("../npy/beta_BN2.npy",model[3].β)
+npzwrite("../npy/weights_C4.npy",model[4].weight)
+npzwrite("../npy/biases_C4.npy",model[4].bias)
+npzwrite("../npy/mu_BN5.npy",model[5].μ)
+npzwrite("../npy/sig_BN5.npy",model[5].σ²)
+npzwrite("../npy/gamma_BN5.npy",model[5].γ)
+npzwrite("../npy/beta_BN5.npy",model[5].β)
+npzwrite("../npy/weights_D6.npy",model[9].weight)
+npzwrite("../npy/biases_D6.npy",model[9].bias)
+npzwrite("../npy/weights_D7.npy",model[11].weight)
+npzwrite("../npy/biases_D7.npy",model[11].bias)
+
 ##
 

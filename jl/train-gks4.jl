@@ -1,3 +1,12 @@
+## Define Comands
+commands = [
+ #   "_background_noise_",
+    "down",
+    "left",
+    "right",
+    "stop"
+]
+##
 #The Evaliable Commands
 # 
 # dataset_path = "/mnt/space/datasets/mixed_speech_commands"
@@ -14,13 +23,6 @@ for (n,c)=enumerate(commands)
 end
 
 ##
-commands = [
- #   "_background_noise_",
-    "down",
-    "left",
-    "right",
-    "stop"
-]
 # Check if all commands are available
 @assert all([c in all_commands for c=commands]) 
 
@@ -448,6 +450,70 @@ heatmap(
     xticks = (1:8,commands),
 )
 ##
+#Elimiate BatchNorms
+##
+function mergeBN2CNN(BN,CNN)
+    # Do channel diminsions match?
+    @assert size(BN.β)[1]==size(CNN.weight)[3]
+    W,H,C,N = size(CNN.weight)
+    badd = @.(BN.β - (BN.γ * BN.μ / √(BN.σ²+1f-5)))
+    myCNN = Conv((W,H),C=>N)
+    myCNN.bias[:] .= 0f0
+    myCNN.weight[:,:,:,:]=CNN.weight
+    badd = myCNN(
+        [
+            badd[ch]
+            for w=1:W, h=1:H,ch=1:C,n=1:1
+        ]
+    )
+    @show CNN.bias[2]
+    @show badd|>size
+    bnew = CNN.bias .+ badd[1,1,:,1]
+    @show bnew[2]
+    @show badd[1,1,2,1]
+    Wnew = [
+        CNN.weight[w,h,c,n] * BN.γ[c] / √(BN.σ²[c]+1f-5)
+        for w=1:W, h=1:H,c=1:C,n=1:N
+    ]
+    CNNnew = Conv((W,H),C=>N,Flux.relu)
+    CNNnew.weight[:,:,:,:] = Wnew
+    CNNnew.bias[:] = bnew
+    CNNnew
+end
+
+mergeBN2CNN(model[3],model[4])
+# In theory the merge function works but one more merge is needed
+##
+newModel = Chain(
+    Upsample(:bilinear,size=(32,32)),
+#    x->(x .- ds_mean) ./ ds_sqrt_var,
+    Conv((3,3),1=>32, Flux.relu),#,dilation=2, stride=2),
+    # BatchNorm(32,affine=true, track_stats=true),
+    #Conv((3,3),32=>64, Flux.relu),
+    mergeBN2CNN(model[3],model[4])
+    # BatchNorm(64,affine=true,track_stats=true),
+    # MaxPool((2,2)),
+    # # Dropout(0.25),
+    # Flux.flatten,
+    # Dense(12544=>128,relu),
+    # # Dropout(0.5),
+    # Dense(128=>length(commands)),
+    
+)
+
+newModel[2].weight[:,:,:,:] = copy(model[2].weight)
+newModel[2].bias[:] = copy(model[2].bias)
+newModel
+##
+#model[3].μ
+model[3].γ
+##
+acts_ref = Flux.activations(model,test_ds_x[:,:,:,1:1])
+acts_new = Flux.activations(newModel,test_ds_x[:,:,:,1:1])
+
+acts_ref[4] .- acts_new[3] |> x->x.*x |> sum
+##
+##
 GC.gc(true)
 trainingData = nothing
 valData = nothing
@@ -455,6 +521,9 @@ CUDA.reclaim()
 ##
 using BSON:@save
 @save "../models/tf-inspired-model-KWS4-ACC0p96.bson" model
+##
+using BSON:@save, @load
+@load "../models/tf-inspired-model-KWS4-ACC0p96.bson" model
 ##
 CUDA.memory_status()
 ## Dump weights for python

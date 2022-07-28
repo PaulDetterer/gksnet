@@ -509,6 +509,7 @@ newModel
 model[3].γ
 ##
 acts_ref = Flux.activations(model,test_ds_x[:,:,:,1:1])
+##
 acts_new = Flux.activations(newModel,test_ds_x[:,:,:,1:1])
 
 acts_ref[4] .- acts_new[3] |> x->x.*x |> sum
